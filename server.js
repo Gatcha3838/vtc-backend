@@ -23,18 +23,21 @@ const upload = multer({
 
 // Fonction pour envoyer un email via l'API Brevo (REST)
 async function sendEmailViaBrevoAPI(to, subject, htmlContent, attachments = []) {
-  const attachmentsFormatted = attachments.map(att => ({
-    name: att.filename,
-    content: att.content.toString('base64')
-  }));
-
   const payload = {
     sender: { email: process.env.EMAIL_FROM || 'noreply@votreentreprise.fr', name: 'VTC Candidatures' },
     to: [{ email: to }],
     subject: subject,
-    htmlContent: htmlContent,
-    attachment: attachmentsFormatted
+    htmlContent: htmlContent
   };
+
+  // Ajouter les pièces jointes seulement s'il y en a
+  if (attachments && attachments.length > 0) {
+    const attachmentsFormatted = attachments.map(att => ({
+      name: att.filename,
+      content: att.content.toString('base64')
+    }));
+    payload.attachment = attachmentsFormatted;
+  }
 
   const response = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
