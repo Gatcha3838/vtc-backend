@@ -2,7 +2,6 @@
 
 const express = require('express');
 const multer = require('multer');
-const nodemailer = require('nodemailer');
 const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
@@ -22,16 +21,38 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10 MB max
 });
 
-// Configuration de l'email (Brevo/Sendinblue)
-const transporter = nodemailer.createTransport({
-  host: 'smtp-relay.brevo.com',
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.BREVO_USER, // Votre email Brevo
-    pass: process.env.BREVO_API_KEY // Votre clé API Brevo
+// Fonction pour envoyer un email via l'API Brevo (REST)
+async function sendEmailViaBrevoAPI(to, subject, htmlContent, attachments = []) {
+  const attachmentsFormatted = attachments.map(att => ({
+    name: att.filename,
+    content: att.content.toString('base64')
+  }));
+
+  const payload = {
+    sender: { email: process.env.EMAIL_FROM || 'noreply@votreentreprise.fr', name: 'VTC Candidatures' },
+    to: [{ email: to }],
+    subject: subject,
+    htmlContent: htmlContent,
+    attachment: attachmentsFormatted
+  };
+
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'accept': 'application/json',
+      'api-key': process.env.BREVO_API_KEY,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Brevo API error: ${error}`);
   }
-});
+
+  return await response.json();
+}
 
 // Stockage en mémoire des candidatures (pour le dashboard)
 // En production, utilisez une vraie base de données
@@ -208,9 +229,19 @@ app.post('/api/candidatures', upload.fields([
       `
     };
 
-    // Envoyer les emails
-    await transporter.sendMail(adminMailOptions);
-    await transporter.sendMail(candidatMailOptions);
+    // Envoyer les emails via l'API Brevo
+    await sendEmailViaBrevoAPI(
+      process.env.EMAIL_ADMIN || 'votre-email@gmail.com',
+      `🚗 Nouvelle candidature chauffeur : ${fullName}`,
+      adminMailOptions.html,
+      attachments
+    );
+
+    await sendEmailViaBrevoAPI(
+      email,
+      'Candidature reçue - Chauffeur VTC',
+      candidatMailOptions.html
+    );
 
     res.json({ 
       success: true, 
@@ -256,17 +287,11 @@ app.post('/api/candidatures/:id/send-email', async (req, res) => {
   }
 
   try {
-    const mailOptions = {
-      from: process.env.EMAIL_FROM,
-      to: candidature.email,
-      subject: `Votre candidature - ${candidature.fullName}`,
-      html: `
-        <p>Bonjour ${candidature.fullName},</p>
-        <p>Nous vous contactons concernant votre candidature...</p>
-      `
-    };
-
-    await transporter.sendMail(mailOptions);
+    await sendEmailViaBrevoAPI(
+      candidature.email,
+      `Votre candidature - ${candidature.fullName}`,
+      `<p>Bonjour ${candidature.fullName},</p><p>Nous vous contactons concernant votre candidature...</p>`
+    );
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Erreur d\'envoi' });
