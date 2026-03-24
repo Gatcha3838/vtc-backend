@@ -425,6 +425,48 @@ app.post('/api/send-email', async (req, res) => {
   }
 });
 
+// Route pour sauvegarder les paiements dans Google Sheets
+app.post('/api/save-payments', async (req, res) => {
+  const { week, drivers } = req.body;
+  
+  if (!week || !drivers || drivers.length === 0) {
+    return res.status(400).json({ success: false, error: 'Données manquantes' });
+  }
+
+  if (!sheetsAPI || !GOOGLE_SHEET_ID) {
+    return res.status(500).json({ success: false, error: 'Google Sheets non configuré' });
+  }
+
+  try {
+    const rows = drivers.map(d => [
+      week,
+      d.chauffeur,
+      d.uber,
+      d.bolt,
+      d.total,
+      d.commission,
+      d.dette,
+      d.aReverser,
+      d.nouvelleDette
+    ]);
+
+    await sheetsAPI.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: 'Historique Paiements!A:I',
+      valueInputOption: 'USER_ENTERED',
+      resource: {
+        values: rows
+      }
+    });
+
+    console.log(`✅ ${drivers.length} paiements sauvegardés pour la semaine ${week}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Erreur sauvegarde Google Sheets:', error);
+    res.status(500).json({ success: false, error: 'Erreur de sauvegarde' });
+  }
+});
+
 // Démarrer le serveur
 app.listen(PORT, () => {
   console.log(`✅ Serveur démarré sur le port ${PORT}`);
