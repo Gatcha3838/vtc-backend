@@ -4,6 +4,7 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -14,8 +15,26 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// Configuration du stockage des fichiers (temporaire en mémoire)
-const storage = multer.memoryStorage();
+// Créer le dossier uploads s'il n'existe pas
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Servir les fichiers uploadés
+app.use('/uploads', express.static(uploadsDir));
+
+// Configuration du stockage des fichiers sur disque
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
+  }
+});
+
 const upload = multer({ 
   storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 } // 10 MB max
@@ -78,21 +97,28 @@ app.post('/api/candidatures', upload.fields([
   try {
     const { fullName, email, phone, city, declaration, remarque } = req.body;
     
-    // Préparer les pièces jointes
+    // Préparer les pièces jointes et stocker les infos
     const attachments = [];
     const documents = {};
     
     Object.keys(req.files).forEach(fieldName => {
       documents[fieldName] = [];
       req.files[fieldName].forEach(file => {
+        // Lire le fichier depuis le disque pour l'email
+        const fileBuffer = fs.readFileSync(file.path);
+        
         attachments.push({
           filename: file.originalname,
-          content: file.buffer
+          content: fileBuffer
         });
+        
+        // Stocker les infos + URL de téléchargement
         documents[fieldName].push({
           name: file.originalname,
           size: file.size,
-          type: file.mimetype
+          type: file.mimetype,
+          filename: file.filename, // Nom unique sur le serveur
+          downloadUrl: `/uploads/${file.filename}` // URL de téléchargement
         });
       });
     });
@@ -300,6 +326,27 @@ app.post('/api/candidatures/:id/send-email', async (req, res) => {
     );
     res.json({ success: true });
   } catch (error) {
+    res.status(500).json({ success: false, error: 'Erreur d\'envoi' });
+  }
+});
+
+// Route pour envoyer un email personnalisé
+app.post('/api/send-email', async (req, res) => {
+  const { to, subject, message } = req.body;
+  
+  if (!to || !subject || !message) {
+    return res.status(400).json({ success: false, error: 'Données manquantes' });
+  }
+
+  try {
+    await sendEmailViaBrevoAPI(
+      to,
+      subject,
+      `<p>${message.replace(/\n/g, '<br>')}</p>`
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Erreur envoi email:', error);
     res.status(500).json({ success: false, error: 'Erreur d\'envoi' });
   }
 });
