@@ -70,17 +70,12 @@ async function addDriverToSheet(candidature) {
       candidature.city,
       rib,
       new Date(candidature.submittedDate).toLocaleDateString('fr-FR'),
-      candidature.status,
-      '', // Montant Uber (à remplir)
-      '', // Montant Bolt (à remplir)
-      '50', // Commission fixe
-      '', // À reverser (formule)
-      '0' // Dette en cours
+      candidature.status
     ];
 
     await sheetsAPI.spreadsheets.values.append({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: 'Feuille 1!A:L', // Ajustez le nom de la feuille si nécessaire
+      range: 'Feuille 1!A:G', // 7 colonnes : Nom, Email, Téléphone, Ville, RIB, Date, Statut
       valueInputOption: 'USER_ENTERED',
       resource: {
         values: [row]
