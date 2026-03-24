@@ -73,7 +73,7 @@ app.post('/api/candidatures', upload.fields([
   { name: 'rcPro', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    const { fullName, email, phone, city, experience, message } = req.body;
+    const { fullName, email, phone, city, declaration, remarque } = req.body;
     
     // Préparer les pièces jointes
     const attachments = [];
@@ -101,8 +101,8 @@ app.post('/api/candidatures', upload.fields([
       email,
       phone,
       city,
-      experience,
-      message,
+      declaration,
+      remarque,
       documents,
       status: 'nouveau',
       submittedDate: new Date().toISOString()
@@ -159,14 +159,14 @@ app.post('/api/candidatures', upload.fields([
               </div>
               
               <div class="info-row">
-                <div class="label">Expérience</div>
-                <div class="value">${experience || 'Non spécifiée'}</div>
+                <div class="label">Déclaration avec fiche de paie</div>
+                <div class="value">${declaration || 'Non'}</div>
               </div>
               
-              ${message ? `
+              ${remarque ? `
               <div class="info-row">
-                <div class="label">Message de motivation</div>
-                <div class="value">${message}</div>
+                <div class="label">Remarque</div>
+                <div class="value">${remarque}</div>
               </div>
               ` : ''}
               
