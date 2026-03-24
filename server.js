@@ -70,7 +70,10 @@ app.post('/api/candidatures', upload.fields([
   { name: 'carteVTC', maxCount: 2 },
   { name: 'carteGrise', maxCount: 1 },
   { name: 'photoVehicule', maxCount: 1 },
-  { name: 'rcPro', maxCount: 1 }
+  { name: 'memoAssurance', maxCount: 1 },
+  { name: 'attestationTitreOnereuse', maxCount: 1 },
+  { name: 'justificatifDomicile', maxCount: 1 },
+  { name: 'rib', maxCount: 1 }
 ]), async (req, res) => {
   try {
     const { fullName, email, phone, city, declaration, remarque } = req.body;
