@@ -5,6 +5,7 @@ const multer = require('multer');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { google } = require('googleapis');
 require('dotenv').config();
 
 const app = express();
@@ -23,6 +24,77 @@ if (!fs.existsSync(uploadsDir)) {
 
 // Servir les fichiers uploadés
 app.use('/uploads', express.static(uploadsDir));
+
+// Configuration Google Sheets
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : '';
+
+let sheetsAPI = null;
+
+// Initialiser Google Sheets API
+async function initGoogleSheets() {
+  try {
+    const auth = new google.auth.JWT(
+      GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      null,
+      GOOGLE_PRIVATE_KEY,
+      ['https://www.googleapis.com/auth/spreadsheets']
+    );
+    
+    sheetsAPI = google.sheets({ version: 'v4', auth });
+    console.log('✅ Google Sheets API initialisée');
+  } catch (error) {
+    console.error('❌ Erreur initialisation Google Sheets:', error);
+  }
+}
+
+// Fonction pour ajouter un chauffeur au Google Sheet
+async function addDriverToSheet(candidature) {
+  if (!sheetsAPI || !GOOGLE_SHEET_ID) {
+    console.error('Google Sheets non configuré');
+    return;
+  }
+
+  try {
+    // Extraire le RIB si disponible dans les documents
+    let rib = 'Non fourni';
+    if (candidature.documents && candidature.documents.rib && candidature.documents.rib.length > 0) {
+      rib = candidature.documents.rib[0].name; // Nom du fichier RIB
+    }
+
+    const row = [
+      candidature.fullName,
+      candidature.email,
+      candidature.phone,
+      candidature.city,
+      rib,
+      new Date(candidature.submittedDate).toLocaleDateString('fr-FR'),
+      candidature.status,
+      '', // Montant Uber (à remplir)
+      '', // Montant Bolt (à remplir)
+      '50', // Commission fixe
+      '', // À reverser (formule)
+      '0' // Dette en cours
+    ];
+
+    await sheetsAPI.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: 'Feuille 1!A:L', // Ajustez le nom de la feuille si nécessaire
+      valueInputOption: 'USER_ENTERED',
+      resource: {
+        values: [row]
+      }
+    });
+
+    console.log(`✅ Chauffeur ${candidature.fullName} ajouté au Google Sheet`);
+  } catch (error) {
+    console.error('❌ Erreur ajout au Google Sheet:', error);
+  }
+}
+
+// Initialiser Google Sheets au démarrage
+initGoogleSheets();
 
 // Configuration du stockage des fichiers sur disque
 const storage = multer.diskStorage({
@@ -296,13 +368,20 @@ app.get('/api/candidatures', (req, res) => {
 });
 
 // Route pour mettre à jour le statut d'une candidature
-app.patch('/api/candidatures/:id/status', (req, res) => {
+app.patch('/api/candidatures/:id/status', async (req, res) => {
   const id = parseInt(req.params.id);
   const { status } = req.body;
   
   const candidature = candidatures.find(c => c.id === id);
   if (candidature) {
+    const oldStatus = candidature.status;
     candidature.status = status;
+    
+    // Si le statut passe à "accepte", ajouter au Google Sheet
+    if (status === 'accepte' && oldStatus !== 'accepte') {
+      await addDriverToSheet(candidature);
+    }
+    
     res.json({ success: true, candidature });
   } else {
     res.status(404).json({ success: false, error: 'Candidature non trouvée' });
