@@ -1,4 +1,5 @@
-// server.js - Backend Node.js pour la gestion des candidatures
+// server.js - Backend Node.js pour la gestion des candidatures VTC
+// VERSION 3 - Avec persistance Google Sheets complète
 
 const express = require('express');
 const multer = require('multer');
@@ -32,6 +33,10 @@ const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_P
 
 let sheetsAPI = null;
 
+// Cache en mémoire des candidatures (chargé depuis Google Sheets)
+let candidatures = [];
+let nextId = 1;
+
 // Initialiser Google Sheets API
 async function initGoogleSheets() {
   try {
@@ -44,47 +49,169 @@ async function initGoogleSheets() {
     
     sheetsAPI = google.sheets({ version: 'v4', auth });
     console.log('✅ Google Sheets API initialisée');
+    
+    // Charger les candidatures au démarrage
+    await loadCandidaturesFromSheet();
   } catch (error) {
     console.error('❌ Erreur initialisation Google Sheets:', error);
   }
 }
 
-// Fonction pour ajouter un chauffeur au Google Sheet
-async function addDriverToSheet(candidature) {
+// FONCTION 1: Charger les candidatures depuis Google Sheets
+async function loadCandidaturesFromSheet() {
   if (!sheetsAPI || !GOOGLE_SHEET_ID) {
     console.error('Google Sheets non configuré');
     return;
   }
 
   try {
-    // Extraire le RIB si disponible dans les documents
-    let rib = 'Non fourni';
-    if (candidature.documents && candidature.documents.rib && candidature.documents.rib.length > 0) {
-      rib = candidature.documents.rib[0].name; // Nom du fichier RIB
-    }
+    const response = await sheetsAPI.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: 'Candidatures!A4:H' // Ligne 3 = en-têtes, ligne 4+ = données
+    });
 
+    const rows = response.data.values || [];
+    candidatures = [];
+    
+    rows.forEach(row => {
+      if (row.length >= 7) { // Au moins ID, Nom, Email, Téléphone, Ville, Date, Statut
+        const candidature = {
+          id: parseInt(row[0]) || 0,
+          fullName: row[1] || '',
+          email: row[2] || '',
+          phone: row[3] || '',
+          city: row[4] || '',
+          submittedDate: row[5] || new Date().toISOString(),
+          status: row[6] || 'nouveau',
+          declaration: row[7] === 'Oui' || row[7] === 'true',
+          documents: {}, // Les documents sont perdus après redéploiement (fichiers éphémères)
+          remarque: ''
+        };
+        
+        candidatures.push(candidature);
+        
+        // Mettre à jour nextId
+        if (candidature.id >= nextId) {
+          nextId = candidature.id + 1;
+        }
+      }
+    });
+
+    console.log(`✅ ${candidatures.length} candidatures chargées depuis Google Sheets`);
+  } catch (error) {
+    console.error('❌ Erreur chargement candidatures:', error);
+  }
+}
+
+// FONCTION 2: Sauvegarder une nouvelle candidature dans Google Sheets
+async function saveCandidatureToSheet(candidature) {
+  if (!sheetsAPI || !GOOGLE_SHEET_ID) {
+    console.error('Google Sheets non configuré');
+    return;
+  }
+
+  try {
     const row = [
+      candidature.id,
       candidature.fullName,
       candidature.email,
       candidature.phone,
       candidature.city,
-      rib,
       new Date(candidature.submittedDate).toLocaleDateString('fr-FR'),
-      candidature.status
+      candidature.status,
+      candidature.declaration ? 'Oui' : 'Non'
     ];
 
     await sheetsAPI.spreadsheets.values.append({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: 'Feuille 1!A:G', // 7 colonnes : Nom, Email, Téléphone, Ville, RIB, Date, Statut
+      range: 'Candidatures!A4:H',
       valueInputOption: 'USER_ENTERED',
       resource: {
         values: [row]
       }
     });
 
-    console.log(`✅ Chauffeur ${candidature.fullName} ajouté au Google Sheet`);
+    console.log(`✅ Candidature #${candidature.id} (${candidature.fullName}) sauvegardée dans Google Sheets`);
   } catch (error) {
-    console.error('❌ Erreur ajout au Google Sheet:', error);
+    console.error('❌ Erreur sauvegarde candidature:', error);
+  }
+}
+
+// FONCTION 3: Mettre à jour le statut d'une candidature dans Google Sheets
+async function updateCandidatureStatusInSheet(candidature) {
+  if (!sheetsAPI || !GOOGLE_SHEET_ID) {
+    console.error('Google Sheets non configuré');
+    return;
+  }
+
+  try {
+    // Trouver la ligne correspondante (ligne 4 = première donnée)
+    const response = await sheetsAPI.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: 'Candidatures!A4:A' // Colonne ID uniquement
+    });
+
+    const ids = response.data.values || [];
+    let rowIndex = -1;
+    
+    for (let i = 0; i < ids.length; i++) {
+      if (parseInt(ids[i][0]) === candidature.id) {
+        rowIndex = i + 4; // +4 car ligne 4 = première donnée
+        break;
+      }
+    }
+
+    if (rowIndex === -1) {
+      console.error(`❌ Candidature #${candidature.id} non trouvée dans Google Sheets`);
+      return;
+    }
+
+    // Mettre à jour le statut (colonne G)
+    await sheetsAPI.spreadsheets.values.update({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `Candidatures!G${rowIndex}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: {
+        values: [[candidature.status]]
+      }
+    });
+
+    console.log(`✅ Statut candidature #${candidature.id} mis à jour: ${candidature.status}`);
+  } catch (error) {
+    console.error('❌ Erreur mise à jour statut:', error);
+  }
+}
+
+// FONCTION 4: Ajouter un chauffeur dans l'onglet "Rattachement"
+async function addDriverToRattachement(candidature) {
+  if (!sheetsAPI || !GOOGLE_SHEET_ID) {
+    console.error('Google Sheets non configuré');
+    return;
+  }
+
+  try {
+    const row = [
+      candidature.fullName,
+      candidature.email,
+      candidature.phone,
+      candidature.city,
+      'RIB à fournir', // Le RIB sera ajouté manuellement
+      new Date().toLocaleDateString('fr-FR'),
+      'accepte'
+    ];
+
+    await sheetsAPI.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: 'Rattachement!A2:G', // Ligne 1 = en-têtes, ligne 2+ = données
+      valueInputOption: 'USER_ENTERED',
+      resource: {
+        values: [row]
+      }
+    });
+
+    console.log(`✅ Chauffeur ${candidature.fullName} ajouté à l'onglet Rattachement`);
+  } catch (error) {
+    console.error('❌ Erreur ajout Rattachement:', error);
   }
 }
 
@@ -118,67 +245,34 @@ async function sendEmailViaBrevoAPI(to, subject, htmlContent, attachments = []) 
 
   // Ajouter les pièces jointes seulement s'il y en a
   if (attachments && attachments.length > 0) {
-    const attachmentsFormatted = attachments.map(att => ({
+    payload.attachment = attachments.map(att => ({
       name: att.filename,
       content: att.content.toString('base64')
     }));
-    payload.attachment = attachmentsFormatted;
   }
 
-  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: {
-      'accept': 'application/json',
-      'api-key': process.env.BREVO_API_KEY,
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Brevo API error: ${error}`);
-  }
-
-  return await response.json();
-}
-
-// Stockage en mémoire des candidatures (pour le dashboard)
-// En production, utilisez une vraie base de données
-let candidatures = [];
-let nextId = 1;
-
-// Fichier de persistance
-const candidaturesFile = path.join(__dirname, 'candidatures.json');
-
-// Charger les candidatures depuis le fichier au démarrage
-function loadCandidatures() {
   try {
-    if (fs.existsSync(candidaturesFile)) {
-      const data = fs.readFileSync(candidaturesFile, 'utf8');
-      const parsed = JSON.parse(data);
-      candidatures = parsed.candidatures || [];
-      nextId = parsed.nextId || 1;
-      console.log(`✅ ${candidatures.length} candidatures chargées depuis le fichier`);
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'api-key': process.env.BREVO_API_KEY,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Brevo API error: ${response.status} ${errorText}`);
     }
+
+    console.log('✅ Email envoyé via Brevo API');
   } catch (error) {
-    console.error('❌ Erreur chargement candidatures:', error);
+    console.error('❌ Erreur envoi email Brevo:', error);
+    throw error;
   }
 }
-
-// Sauvegarder les candidatures dans le fichier
-function saveCandidatures() {
-  try {
-    const data = JSON.stringify({ candidatures, nextId }, null, 2);
-    fs.writeFileSync(candidaturesFile, data, 'utf8');
-    console.log('💾 Candidatures sauvegardées');
-  } catch (error) {
-    console.error('❌ Erreur sauvegarde candidatures:', error);
-  }
-}
-
-// Charger au démarrage
-loadCandidatures();
 
 // Route pour soumettre une candidature
 app.post('/api/candidatures', upload.fields([
@@ -211,18 +305,14 @@ app.post('/api/candidatures', upload.fields([
           content: fileBuffer
         });
         
-        // Stocker les infos + URL de téléchargement
         documents[fieldName].push({
           name: file.originalname,
-          size: file.size,
-          type: file.mimetype,
-          filename: file.filename, // Nom unique sur le serveur
+          path: file.path,
           downloadUrl: `/uploads/${file.filename}` // URL de téléchargement
         });
       });
     });
 
-    // Créer la candidature
     const candidature = {
       id: nextId++,
       fullName,
@@ -238,13 +328,13 @@ app.post('/api/candidatures', upload.fields([
     
     candidatures.push(candidature);
     
-    // Sauvegarder immédiatement
-    saveCandidatures();
+    // Sauvegarder dans Google Sheets
+    await saveCandidatureToSheet(candidature);
 
     // Email à l'admin avec tous les documents
     const adminMailOptions = {
       from: process.env.EMAIL_FROM || 'candidatures@votreentreprise.fr',
-      to: process.env.EMAIL_ADMIN || 'votre-email@gmail.com', // VOTRE EMAIL ICI
+      to: process.env.EMAIL_ADMIN || 'votre-email@gmail.com',
       subject: `🚗 Nouvelle candidature chauffeur : ${fullName}`,
       html: `
         <!DOCTYPE html>
@@ -290,8 +380,8 @@ app.post('/api/candidatures', upload.fields([
               </div>
               
               <div class="info-row">
-                <div class="label">Déclaration avec fiche de paie</div>
-                <div class="value">${declaration || 'Non'}</div>
+                <div class="label">Déclaration URSSAF</div>
+                <div class="value">${declaration ? 'Oui ✅' : 'Non ❌'}</div>
               </div>
               
               ${remarque ? `
@@ -302,25 +392,21 @@ app.post('/api/candidatures', upload.fields([
               ` : ''}
               
               <div class="documents">
-                <div class="label" style="margin-bottom: 10px;">Documents joints (${attachments.length} fichiers)</div>
-                ${Object.entries(documents).map(([type, files]) => `
-                  <div style="margin-top: 10px;">
-                    <strong style="color: #C9A961;">${type}</strong>
-                    ${files.map(f => `<div class="doc-item">📎 ${f.name}</div>`).join('')}
-                  </div>
-                `).join('')}
+                <div class="label" style="margin-bottom: 10px;">Documents joints (${attachments.length})</div>
+                ${Object.keys(documents).map(docType => 
+                  `<div class="doc-item">✓ ${docType}: ${documents[docType].length} fichier(s)</div>`
+                ).join('')}
               </div>
             </div>
           </div>
         </body>
         </html>
-      `,
-      attachments: attachments
+      `
     };
 
-    // Email de confirmation au candidat
+    // Email au candidat
     const candidatMailOptions = {
-      from: process.env.EMAIL_FROM || 'noreply@votreentreprise.fr',
+      from: process.env.EMAIL_FROM || 'candidatures@votreentreprise.fr',
       to: email,
       subject: 'Candidature reçue - Chauffeur VTC',
       html: `
@@ -392,7 +478,7 @@ app.post('/api/candidatures', upload.fields([
   }
 });
 
-// Route pour récupérer toutes les candidatures (pour le dashboard)
+// Route pour récupérer toutes les candidatures
 app.get('/api/candidatures', (req, res) => {
   res.json(candidatures);
 });
@@ -407,12 +493,12 @@ app.patch('/api/candidatures/:id/status', async (req, res) => {
     const oldStatus = candidature.status;
     candidature.status = status;
     
-    // Sauvegarder les modifications
-    saveCandidatures();
+    // Mettre à jour dans Google Sheets
+    await updateCandidatureStatusInSheet(candidature);
     
-    // Si le statut passe à "accepte", ajouter au Google Sheet
+    // Si le statut passe à "accepte", ajouter au Rattachement
     if (status === 'accepte' && oldStatus !== 'accepte') {
-      await addDriverToSheet(candidature);
+      await addDriverToRattachement(candidature);
     }
     
     res.json({ success: true, candidature });
@@ -421,94 +507,72 @@ app.patch('/api/candidatures/:id/status', async (req, res) => {
   }
 });
 
-// Route pour envoyer un email à un candidat depuis le dashboard
-app.post('/api/candidatures/:id/send-email', async (req, res) => {
-  const id = parseInt(req.params.id);
-  const candidature = candidatures.find(c => c.id === id);
-  
-  if (!candidature) {
-    return res.status(404).json({ success: false, error: 'Candidature non trouvée' });
-  }
-
-  try {
-    await sendEmailViaBrevoAPI(
-      candidature.email,
-      `Votre candidature - ${candidature.fullName}`,
-      `<p>Bonjour ${candidature.fullName},</p><p>Nous vous contactons concernant votre candidature...</p>`
-    );
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, error: 'Erreur d\'envoi' });
-  }
-});
-
-// Route pour envoyer un email personnalisé
+// Route pour envoyer un email personnalisé à un candidat
 app.post('/api/send-email', async (req, res) => {
-  const { to, subject, message } = req.body;
-  
-  if (!to || !subject || !message) {
-    return res.status(400).json({ success: false, error: 'Données manquantes' });
-  }
-
   try {
-    await sendEmailViaBrevoAPI(
-      to,
-      subject,
-      `<p>${message.replace(/\n/g, '<br>')}</p>`
-    );
-    res.json({ success: true });
+    const { to, subject, message } = req.body;
+    
+    await sendEmailViaBrevoAPI(to, subject, message);
+    
+    res.json({ success: true, message: 'Email envoyé avec succès' });
   } catch (error) {
     console.error('Erreur envoi email:', error);
-    res.status(500).json({ success: false, error: 'Erreur d\'envoi' });
+    res.status(500).json({ success: false, error: 'Erreur lors de l\'envoi de l\'email' });
   }
 });
 
-// Route pour sauvegarder les paiements dans Google Sheets
+// Route pour sauvegarder les paiements hebdomadaires dans Google Sheets
 app.post('/api/save-payments', async (req, res) => {
-  const { week, drivers } = req.body;
-  
-  if (!week || !drivers || drivers.length === 0) {
-    return res.status(400).json({ success: false, error: 'Données manquantes' });
-  }
-
-  if (!sheetsAPI || !GOOGLE_SHEET_ID) {
-    return res.status(500).json({ success: false, error: 'Google Sheets non configuré' });
-  }
-
   try {
-    const rows = drivers.map(d => [
+    const { week, drivers } = req.body;
+    
+    if (!sheetsAPI || !GOOGLE_SHEET_ID) {
+      return res.status(500).json({ success: false, error: 'Google Sheets non configuré' });
+    }
+
+    // Préparer les lignes à insérer
+    const rows = drivers.map(driver => [
       week,
-      d.chauffeur,
-      d.uber,
-      d.bolt,
-      d.total,
-      d.commission,
-      d.dette,
-      d.aReverser,
-      d.nouvelleDette
+      driver.chauffeur,
+      driver.uber,
+      driver.bolt,
+      driver.total,
+      driver.commission,
+      driver.dette,
+      driver.aReverser,
+      driver.nouvelleDette
     ]);
 
+    // Ajouter dans l'onglet "Historique Paiements"
     await sheetsAPI.spreadsheets.values.append({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: 'Historique Paiements!A:I',
+      range: 'Historique Paiements!A2:I', // Ligne 1 = en-têtes, ligne 2+ = données
       valueInputOption: 'USER_ENTERED',
       resource: {
         values: rows
       }
     });
 
-    console.log(`✅ ${drivers.length} paiements sauvegardés pour la semaine ${week}`);
-    res.json({ success: true });
+    console.log(`✅ Paiements semaine ${week} sauvegardés (${drivers.length} chauffeurs)`);
+    
+    res.json({ success: true, message: 'Paiements sauvegardés avec succès' });
   } catch (error) {
-    console.error('Erreur sauvegarde Google Sheets:', error);
-    res.status(500).json({ success: false, error: 'Erreur de sauvegarde' });
+    console.error('❌ Erreur sauvegarde paiements:', error);
+    res.status(500).json({ success: false, error: 'Erreur lors de la sauvegarde' });
   }
+});
+
+// Route de health check
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    candidatures: candidatures.length,
+    sheetsConnected: sheetsAPI !== null
+  });
 });
 
 // Démarrer le serveur
 app.listen(PORT, () => {
-  console.log(`✅ Serveur démarré sur le port ${PORT}`);
-  console.log(`📧 Email admin: ${process.env.EMAIL_ADMIN}`);
+  console.log(`🚀 Serveur démarré sur le port ${PORT}`);
+  console.log(`📊 ${candidatures.length} candidatures en mémoire`);
 });
-
-module.exports = app;
