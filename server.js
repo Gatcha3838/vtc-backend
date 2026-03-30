@@ -148,6 +148,38 @@ async function sendEmailViaBrevoAPI(to, subject, htmlContent, attachments = []) 
 let candidatures = [];
 let nextId = 1;
 
+// Fichier de persistance
+const candidaturesFile = path.join(__dirname, 'candidatures.json');
+
+// Charger les candidatures depuis le fichier au démarrage
+function loadCandidatures() {
+  try {
+    if (fs.existsSync(candidaturesFile)) {
+      const data = fs.readFileSync(candidaturesFile, 'utf8');
+      const parsed = JSON.parse(data);
+      candidatures = parsed.candidatures || [];
+      nextId = parsed.nextId || 1;
+      console.log(`✅ ${candidatures.length} candidatures chargées depuis le fichier`);
+    }
+  } catch (error) {
+    console.error('❌ Erreur chargement candidatures:', error);
+  }
+}
+
+// Sauvegarder les candidatures dans le fichier
+function saveCandidatures() {
+  try {
+    const data = JSON.stringify({ candidatures, nextId }, null, 2);
+    fs.writeFileSync(candidaturesFile, data, 'utf8');
+    console.log('💾 Candidatures sauvegardées');
+  } catch (error) {
+    console.error('❌ Erreur sauvegarde candidatures:', error);
+  }
+}
+
+// Charger au démarrage
+loadCandidatures();
+
 // Route pour soumettre une candidature
 app.post('/api/candidatures', upload.fields([
   { name: 'carteIdentite', maxCount: 2 },
@@ -205,6 +237,9 @@ app.post('/api/candidatures', upload.fields([
     };
     
     candidatures.push(candidature);
+    
+    // Sauvegarder immédiatement
+    saveCandidatures();
 
     // Email à l'admin avec tous les documents
     const adminMailOptions = {
@@ -371,6 +406,9 @@ app.patch('/api/candidatures/:id/status', async (req, res) => {
   if (candidature) {
     const oldStatus = candidature.status;
     candidature.status = status;
+    
+    // Sauvegarder les modifications
+    saveCandidatures();
     
     // Si le statut passe à "accepte", ajouter au Google Sheet
     if (status === 'accepte' && oldStatus !== 'accepte') {
